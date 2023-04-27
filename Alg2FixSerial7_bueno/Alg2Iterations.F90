@@ -1,0 +1,684 @@
+
+
+subroutine SetUpInitialConditions
+! Set up the initial interface
+! and rheologies
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+	run_time = 0.0d0; ! initialize time
+
+
+	! set up the initial concentration field
+	do j = 0, MaxJ+1
+		 do i = 0, MaxI+1
+		 	c(i, j) = 0.0d0
+			if (Imoving == 1) then
+				if (j > MaxJ/2.0d0) then
+!				if (j*deltaY >= 5.0*(i*deltaX + 0.5)) then;
+					c(i, j) = 1.0d0;
+				endif 	
+     		else
+				if (j*deltaY >=1.0) then;
+!				if (j*deltaY >= 5.0*(i*deltaX + 0.5)) then;
+					 c(i, j) = 1.0d0;
+				endif
+ 			endif 	
+			un(i, j) = 0.0d0;
+		 enddo
+	enddo
+
+end subroutine SetUpInitialConditions
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+
+function EndPointIntegral(pg, zed)
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	real*8:: EndPointIntegral, hgp, tauY, kappa, m
+
+	real*8:: pg ! pressure gradient
+	integer:: zed !axial value z
+
+	integer:: counterEPI
+	real*8:: EPI, dEPI, auxhgp, auxtauY, auxkappa, auxm
+
+
+	EPI = -Qrof;
+	do counterEPI = 1,MaxI
+		auxhgp = (real(counterEPI,8) - 0.5d0) * deltaX; auxhgp = hgp(auxhgp, e)
+		auxtauY = c(counterEPI, zed); auxtauY = tauY(auxtauY)
+		auxkappa = kappa(c(counterEPI, zed))
+		auxm = m(c(counterEPI, zed))
+		call BigF(pg, auxhgp,  auxtauY,auxkappa ,auxm, epsi, dEPI);
+		EPI = EPI + dEPI * deltaX;
+	enddo
+	EndPointIntegral = EPI
+
+end function EndPointIntegral
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+function dEPIdPG(pg, zed)
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	real*8:: dEPIdPG, hgp, tauY, kappa, m
+	real*8:: pg
+	integer:: zed
+
+	integer:: counterEPI
+	real*8:: EPI, dEPI, auxhgp, auxtauY, auxkappa, auxm
+
+	EPI = 0;
+	do counterEPI = 1, MaxI
+		auxhgp = hgp((real(counterEPI,8) - 0.5d0) * deltaX, e)
+		auxtauY = tauY(c(counterEPI, zed))
+		auxkappa = kappa(c(counterEPI, zed))
+		auxm = m(c(counterEPI, zed))
+		call dFdG(pg, auxhgp, auxtauY, auxkappa,auxm, epsi, dEPI)
+		EPI = EPI + dEPI * deltaX;
+	enddo
+
+	dEPIdPG = EPI
+
+
+end function dEPIdPG
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+function InvertEndPointIntegral(zed)
+! Newton's method to find pressure gradient... only 10 steps
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	real*8:: InvertEndPointIntegral, hgp, tauY, kappa, m, EndPointIntegral, dEPIdPG
+
+	integer:: zed
+
+	real*8:: PGn, auxEndPointIntegral, auxdEPIdPG
+	integer:: CounterIEPI
+	
+	PGn = 5.0;
+	do CounterIEPI = 1, 10
+		auxEndPointIntegral = EndPointIntegral(PGn, zed)
+		auxdEPIdPG = dEPIdPG(PGn, zed)
+		PGn = PGn - (auxEndPointIntegral / auxdEPIdPG)
+	enddo
+	InvertEndPointIntegral = PGn
+
+
+end function InvertEndPointIntegral
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+subroutine EstablishPsi0PsiL
+! Find the stream function at z = 0,L (or z= \pm L)
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+	
+	implicit none
+
+
+	real*8:: InvertEndPointIntegral, hgp, tauY, kappa, m
+
+	integer:: CounterEP0PL
+	real*8:: dPsi, auxhgp, auxtauY, auxkappa, auxm
+
+	G0 = InvertEndPointIntegral(1)
+	GL = InvertEndPointIntegral(MaxJ+1)
+
+	psi0(1) = 0;
+	psiL(1) = 0;
+	do CounterEP0PL = 1, MaxI
+		auxhgp = hgp((real(CounterEP0PL,8) - 0.5d0) * deltaX, e)
+		auxtauY = tauY(c(CounterEP0PL, 1))
+		auxkappa = kappa(c(CounterEP0PL, 1))  
+		auxm = m(c(CounterEP0PL, 1))
+		call BigF(G0, auxhgp, auxtauY, auxkappa, auxm, epsi, dPsi)
+		psi0(CounterEP0PL+1) = psi0(CounterEP0PL) + dPsi * deltaX;
+
+		auxtauY = tauY(c(CounterEP0PL, MaxJ+1))
+		auxkappa = kappa(c(CounterEP0PL, MaxJ+1))  
+		auxm = m(c(CounterEP0PL, MaxJ+1))
+
+		call BigF(GL, auxhgp, auxtauY, auxkappa, auxm, epsi, dPsi);
+		psiL(CounterEP0PL+1) = psiL(CounterEP0PL) + dPsi * deltaX;
+	enddo
+
+end subroutine EstablishPsi0PsiL
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+subroutine Establishg
+! Calculates the grad(Psi^*) (aka g)
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+	
+	! set up PsiS
+	do i = 1,MaxI+1
+		do j = 1, MaxJ+1
+			if (Imoving == 1) then
+!  version: moving frame
+				PsiS(i, j) = (i-1.0)*deltaX + e/Pi*dsin(Pi*(i-1.0d0)*deltaX); 
+			else
+!  version: fixed frame
+				PsiS(i, j) = psi0(i)*real(MaxJ + 1 - j,8)/real(MaxJ,8) +  &
+ 			             psiL(i)*real(j-1,8)/real(MaxJ,8);
+			endif;
+		enddo
+		PsiS(i, 0) = PsiS(i, 1);
+	enddo
+	! set up g
+	do i = 1,MaxI
+		do j = 1, MaxJ
+			g(0, i, j) = (PsiS(i+1, j+1) - PsiS(i, j+1) + PsiS(i+1, j) - PsiS(i, j)) &
+			 	/(2.0d0 * deltaX);
+			g(1, i, j) = (PsiS(i+1, j+1) - PsiS(i+1, j) + PsiS(i, j+1) - PsiS(i, j)) &
+			 	/(2.0d0 * deltaY);
+		enddo
+		g(0, i, 0) = g(0, i, 1);
+		g(1, i, 0) = g(1, i, 1);
+	enddo
+
+end subroutine Establishg
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+subroutine AdvanceU
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	 real*8:: alphaAU, betaAU, gammaAU,alpha,invalpha
+	 real*8, dimension( 0:MaxI+2, 0:MaxJ+2):: fij
+	 integer:: IterationCounter
+	 real*8:: Emax, deltaUn
+
+	 ! first establish the RHS of Poisson
+	 do j = 2, MaxJ
+		 do i = 2,MaxI
+				fij(i, j) =  & 
+				 	0.5d0*deltaY*( (pn(0, i-1, j-1) + pn(0, i-1, j) - pn(0, i, j) &
+				    - pn(0, i, j-1)) - (lambdan(0, i-1, j-1) + lambdan(0, i-1, j) &
+					- lambdan(0, i, j) - lambdan(0, i, j-1)) ) + 0.5d0*deltaX *   &
+		            ( (pn(1, i-1, j-1) + pn(1, i, j-1) - pn(1, i-1, j) - pn(1, i, j)) - &
+ 				 	(lambdan(1, i-1, j-1) + lambdan(1, i, j-1) - lambdan(1, i-1, j)  &
+					- lambdan(1, i, j)) );
+		 enddo
+	 enddo
+
+	 ! now iterate through (Gauss-Seidel)
+	 alpha = deltaX/deltaY;
+	 invalpha = deltaY/deltaX;
+	 do IterationCounter = 1, NoOfIterationsInGS
+		 Emax = 0;
+		 j = 2;
+		 do i = 2,MaxI
+			deltaUn = 0.125d0*(un(i+1, j+1) + un(i-1, j+1) + un(i-1, j+1) + un(i+1, j+1))    &
+				+ 0.25d0*(2.0d0*alpha - invalpha)/(alpha+invalpha)*(un(i, j+1) + un(i, j+1)) &
+				+ 0.25d0*(2.0d0*invalpha - alpha)/(alpha+invalpha)*(un(i+1, j) + un(i-1, j)) &	
+				+ 0.75d0/(alpha+invalpha)*fij(i, j);
+			if (dabs(un(i, j) - deltaUn) > Emax) then
+				Emax = dabs(un(i, j) - deltaUn)
+			endif
+			un(i, j) = (1.0d0-sor)*un(i, j) + sor*deltaUn;
+		 enddo
+		 do j = 3, MaxJ-1
+			 do i = 2,MaxI
+				deltaUn = 0.125d0*(un(i+1, j+1) + un(i-1, j+1) + un(i-1, j-1) + un(i+1, j-1))    &
+					+ 0.25d0*(2.0d0*alpha - invalpha)/(alpha+invalpha)*(un(i, j+1) + un(i, j-1)) &
+					+ 0.25d0*(2.0d0*invalpha - alpha)/(alpha+invalpha)*(un(i+1, j) + un(i-1, j)) &	
+					+ 0.75d0/(alpha+invalpha)*fij(i, j);
+				if (dabs(un(i, j) - deltaUn) > Emax) then 
+					Emax = dabs(un(i, j) - deltaUn);
+				endif
+				un(i, j) = (1.0d0-sor)*un(i, j) + sor*deltaUn;
+			 enddo
+		 enddo
+		 j = MaxJ;
+		 do i = 2,MaxI
+			deltaUn = 0.125d0*(un(i+1, j-1) + un(i-1, j-1) + un(i-1, j-1) + un(i+1, j-1))    &
+				+ 0.25d0*(2.0d0*alpha - invalpha)/(alpha+invalpha)*(un(i, j-1) + un(i, j-1)) &
+				+ 0.25d0*(2.0d0*invalpha - alpha)/(alpha+invalpha)*(un(i+1, j) + un(i-1, j)) &	
+				+ 0.75d0/(alpha+invalpha)*fij(i, j);
+			if (dabs(un(i, j) - deltaUn) > Emax) then
+				Emax = dabs(un(i, j) - deltaUn);
+			endif
+			un(i, j) = (1.0d0-sor)*un(i, j) + sor*deltaUn;
+		 enddo
+		 do i = 1,MaxI+1
+			un(i, 1) = un(i, 2);
+			un(i, MaxJ+1) = un(i, MaxJ);		
+		 enddo
+
+		 if (Emax < ToleranceInGS) then; exit; endif
+	enddo
+
+
+
+end subroutine AdvanceU
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+
+
+subroutine AdvanceP
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	real*8:: x1, x2, x
+	real*8:: theta1, theta2, dthetaold, dtheta
+	real*8:: rts, f, df, temp
+	real*8:: Xiret1
+	real*8:: test1, test2
+
+	real*8:: dXidGPSI
+
+	integer:: counterAP
+
+	real*8:: rho, tauY, hgp, kappa, m
+
+	do j = 1, MaxJ
+		do i = 1, MaxI
+			! first compute x
+			x1 = lambdan(0, i, j) + g(0, i, j) &
+			 	+ ((un(i+1, j+1) - un(i, j+1))/(2.0d0 * deltaX) &
+			 	+ (un(i+1, j) - un(i, j))/(2.0d0 * deltaX)) - &
+			 	rho(c(i, j))*dcos(beta)/StStar;
+
+			x2 = lambdan(1, i, j) + g(1, i, j) &
+			 	+ ((un(i+1, j+1) - un(i+1, j))/(2.0d0 * deltaY) &
+			 	+ (un(i, j+1) - un(i, j))/(2.0d0 * deltaY)) - &
+			 	rho(c(i, j))*dsin(beta)*dsin(Pi*(i - 0.5d0) * deltaX)/StStar;
+
+			x = (x1 * x1 + x2 * x2)**0.5d0
+
+			! test if yielded
+			if ( x <= tauY(c(i, j))/ hgp((real(i,8) - 0.5d0) * deltaX, e) ) then
+				rts = 0;
+			else
+				! now extract theta 
+				! from ra * Xi(theta * x) + tauY * ra/H + theta * x - x = 0
+				! use a hybrid safe bisection/NR method
+				theta1 = 0;	theta2 = 1; ! theta is in (0,1)
+				rts = 0.5d0; dthetaold = 1.0;	dtheta = 1.0;
+
+				call BigXi(rts * x, hgp((real(i,8) - 0.5d0) * deltaX, e), tauY(c(i, j)), kappa(c(i, j)),  &
+				 		m(c(i, j)), epsi, Xiret1)
+				call BigXi(0, hgp((real(i,8) - 0.5d0) * deltaX, e), tauY(c(i, j)), kappa(c(i, j)), &
+				 		m(c(i, j)), epsi, test1);
+				test2 = test1 + ( tauY(c(i, j)) / hgp((real(i,8)-0.5d0) * deltaX, e) ) - x;
+				dXidGPSI = ( (hgp((real(i,8) - 0.5) * deltaX, e) * Xiret1 / kappa(c(i,j)))**m(c(i,j)) &
+						* hgp((real(i,8) - 0.5) * deltaX, e) * hgp((real(i,8) - 0.5) * deltaX, e) &
+						- 2 * rts * x) &
+						/ (Xiret1 + tauY(c(i,j)) / hgp((real(i,8) - 0.5) * deltaX, e))
+				f = Xiret1 + (tauY(c(i, j)) / hgp((real(i,8)-0.5d0) * deltaX, e)) + rts * x - x;
+				df = x + x/dXidGPSI;
+
+				do counterAP = 1, NoOfIterationsInInversion
+					if (( ( (rts - theta2) * df - f) * ((rts - theta1) * df - f) > 0.0d0) .or. &
+					 (dabs(2.0d0 * f) > dabs(dthetaold * df)) ) then
+					! bisect if Newton bad
+						dthetaold = dtheta;
+						dtheta = 0.5d0 * (theta2 - theta1);
+						rts = theta1 + dtheta;
+						if (theta1 == rts) then; exit; endif
+					else
+					! use Newton if good
+						dthetaold = dtheta;
+						dtheta = f / df;
+						temp = rts;
+						rts = rts - dtheta; !!aqui
+						if (temp == rts) then; exit; endif
+					endif
+					! termination condition
+					if ((dabs(dtheta) < INV_TOL) .and. (dabs(f) < INV_TOL)) then; exit; endif
+					! recalc the fns
+					call BigXi(rts * x, hgp((real(i,8) - 0.5d0) * deltaX, e), tauY(c(i, j)), kappa(c(i, j)), &
+					 	m(c(i, j)), epsi, Xiret1);
+
+					dXidGPSI = ( (hgp((real(i,8) - 0.5) * deltaX, e) * Xiret1 / kappa(c(i,j)))**m(c(i,j)) &
+						* hgp((real(i,8) - 0.5) * deltaX, e) * hgp((real(i,8) - 0.5) * deltaX, e) &
+						- 2 * rts * x) &
+						/ (Xiret1 + tauY(c(i,j)) / hgp((real(i,8) - 0.5) * deltaX, e))
+
+					f = Xiret1 + (tauY(c(i, j)) / hgp((real(i,8)-0.5d0) * deltaX, e)) + rts * x - x;
+					df = x + x/dXidGPSI;
+					
+					if (f < 0.0d0) then
+						theta1 = rts;
+					else
+						theta2 = rts;
+					endif
+				enddo
+			endif
+			! now re-construct pn
+			pn(0, i, j) = rts * x1 - g(0, i, j);
+			pn(1, i, j) = rts * x2 - g(1, i, j);
+		enddo
+	enddo
+	do i = 1, MaxI
+		pn(0, i, 0) = pn(0, i, 1);
+	enddo
+
+
+end subroutine AdvanceP
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+
+subroutine AdvanceLambda
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	 do j = 1,MaxJ
+		do i = 1, MaxI
+			lambdan(0, i, j) = lambdan(0, i, j) +  ron * ( - pn(0, i, j) &
+			 	+ (un(i+1, j+1) - un(i, j+1))/(2.0d0 * deltaX) &
+			 	+ (un(i+1, j) - un(i, j))/(2.0d0 * deltaX));
+			lambdan(1, i, j) = lambdan(1, i, j) + ron * (- pn(1, i, j) &
+			 	+ (un(i+1, j+1) - un(i+1, j))/(2.0d0 * deltaY) &
+			 	+ (un(i, j+1) - un(i, j))/(2.0d0 * deltaY));
+		 enddo
+	 enddo
+
+
+end subroutine AdvanceLambda
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+
+subroutine Alg2Run(NumberOfAlg2Iterations,EstimationOfLambdaRequired)
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	integer:: NumberOfAlg2Iterations
+	logical:: EstimationOfLambdaRequired
+
+	integer:: CounterOfIterations
+	
+	real*8:: rho
+		
+		! establish G and re-set lambda_n to optimal if required
+		if (EstimationOfLambdaRequired .eqv. .true.) then
+			! First get the G0/G1 - pressure heads at the 
+			! top and bottom of the well - by inverting the 
+			! flux integrals
+			call EstablishPsi0PsiL
+			call Establishg
+			do j = 1, MaxJ
+				do i = 1,MaxI
+					 if (c(i, j) == 1.0d0) then
+!	 					 lambdan(0, i, j) = GL;
+						 lambdan(0, i, j) = GL-rho(c(i, j))*dcos(beta)/StStar;
+					 else
+!	 					 lambdan(0, i, j) = G0;
+						 lambdan(0, i, j) = G0-rho(c(i, j))*dcos(beta)/StStar;
+					 endif
+!	 				 lambdan(1, i, j) = 0;
+					 lambdan(1, i, j) = rho(c(i, j))*dsin(beta)* &
+					        dsin(Pi*(real(i,8) - 0.5d0) * deltaX)/StStar;
+				enddo
+			enddo
+		endif
+
+		! perform the Alg2 iteration
+		do CounterOfIterations = 1, NumberOfAlg2Iterations
+			call AdvanceU;
+			call AdvanceP;
+			call AdvanceLambda;
+		enddo
+	
+end subroutine Alg2Run
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+subroutine RunTimeAdvance
+! Main time loop
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+	integer:: CounterOfTimesteps;
+        integer::iin,jin
+
+
+	call SetUpInitialConditions
+
+!        do iin = 1, MaxI
+!            do jin = 1, MaxJ
+!                write(*,*)c(iin,jin)
+!            enddo
+!        enddo
+
+
+	call Alg2Run(NoOfIterationsInAlg2FirstPass,.true.);
+
+!        do iin = 1, MaxI
+!            do jin = 1, MaxJ
+!                write(*,*)un(iin,jin)
+!            enddo
+!        enddo
+
+
+	if (Imoving == 1) then
+                open(33,file = './MtwoD2.txt',status = 'replace')
+		open(34,file = './MtwoD.txt',status = 'replace')
+	else
+                open(33,file = './twoD2.txt',status = 'replace')
+		open(34,file = './twoD.txt',status = 'replace')
+	endif
+
+	call DrawStuff(1)
+
+	CounterOfTimesteps = 0;
+
+	do while (run_time < totaltime)
+		call DrawStuff(printfunctions)
+
+      !  do iin = 1, MaxI
+      !      do jin = 1, MaxJ
+      !          write(*,*)un(iin,jin)
+      !      enddo
+      !  enddo
+
+
+		call AdvanceOneTimestep
+		CounterOfTimesteps=CounterOfTimesteps+1
+                !write(*,*)'CounterOfTimesteps',CounterOfTimesteps
+		call Alg2Run(NoOfIterationsInAlg2SubsequentPass, .false.);
+	enddo
+	
+        close(33)
+	close(34)
+
+end subroutine RunTimeAdvance
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+
+function tauY(concentration)
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+
+
+	real*8:: concentration, tauY
+
+	tauY = (1.0d0-concentration) * tau1 + concentration * tau2
+
+end function tauY
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+function rho(concentration)
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	real*8:: concentration, rho
+
+	rho = (1.0d0-concentration) * rho1 + concentration * rho2
+
+end function rho
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+function m(concentration)
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	real*8:: concentration, m
+
+	m = (1.0d0-concentration) * m1 + concentration * m2
+
+end function m
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+function kappa(concentration)
+
+	use param
+	use Alg2Defs
+	use Alg2IterationsModule
+
+	implicit none
+
+
+	real*8:: concentration, kappa
+
+	kappa = (1-concentration) * kappa1 + concentration * kappa2
+
+end function kappa
+
+
+
+! ****************************************************************************************
+! ****************************************************************************************
+
+
+subroutine DrawStuff(printf)
+!	to print data in text files
+
+	use Alg2Defs
+	use Alg2IterationsModule
+
+! Record stream function and concentration
+
+	real*8, dimension(0:MaxI, 0:MaxJ):: z2arr
+
+	integer :: printf
+
+	! Output: concentration
+
+	if (printf == 1) then
+		do i = 1,MaxI+1
+			do j = 1,MaxJ+1
+				z2arr(i-1, j-1) = sngl( (c(i, j) + c(i-1, j-1) + c(i, j-1) + c(i-1, j))/4.0d0 ); 
+				write(34,*) z2arr(i-1,j-1)
+			enddo
+		enddo
+
+! Output: concentration 2
+                do i = 1, MaxI+1
+                           write(33,'(255(F7.3))') (z2arr(i-1,j-1), j = 1, MaxJ+1)                           
+                enddo
+                write(33,*)
+
+
+
+	! Output: Stream function
+
+		do j = 1, MaxJ+1
+			do i = 1, MaxI+1
+				write(35,*) un(i, j) + PsiS(i, j)
+			enddo
+		enddo
+
+! Output: Stream2 function
+                do i = 1, MaxI+1
+                       ! do j = 1, MaxJ+1
+                                !write(37,'(10(F7.3))') (un(i, j) + PsiS(i, j), j = 1, MaxJ+1) !original
+                                !write(37,'(15(F7.3))') (2.0*(un(i, j) + PsiS(i, j)), j = 1, MaxJ+1) !8x16
+                                !write(37,'(31(F7.3))') (2.0*(un(i, j) + PsiS(i, j)), j = 1, MaxJ+1)   !16x32
+                                !write(37,'(63(F7.3))') (2.0*(un(i, j) + PsiS(i, j)), j = 1, MaxJ+1)  !32x64 
+                                !write(37,'(127(F7.3))') (2.0*(un(i, j) + PsiS(i, j)), j = 1, MaxJ+1) !64x128
+                                write(37,'(255(F7.3))') (2.0*(un(i, j) + PsiS(i, j)), j = 1, MaxJ+1) !64x128
+                       ! enddo
+                enddo
+
+	endif
+
+end subroutine DrawStuff
