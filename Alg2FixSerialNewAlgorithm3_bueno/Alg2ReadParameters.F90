@@ -1,0 +1,35 @@
+        subroutine readparameters
+!       read parameters
+        use param 
+ 
+        implicit none 
+
+	real*8 :: aux 
+
+        open(14, file = './Alg2FixParameters.txt',status = 'old') 
+ 
+        print*, 'You can change parameters in file Alg2FixParameters.txt' 
+        print*, ' ' 
+ 
+	read(14,*) aux
+        read(14,*) StStar
+        read(14,*) e
+        read(14,*) beta
+        read(14,*) tau1
+        read(14,*) tau2
+        read(14,*) m1
+        read(14,*) m2
+        read(14,*) kappa1
+        read(14,*) kappa2
+        read(14,*) rho1
+        read(14,*) rho2
+        read(14,*) Qrof
+	read(14,*) timeinterval
+	read(14,*) totaltime
+
+	close(14)
+
+	! fix angle
+	beta = pi*beta
+
+	end subroutine readparameters
