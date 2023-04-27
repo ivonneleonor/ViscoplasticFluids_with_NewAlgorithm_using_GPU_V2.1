@@ -1,0 +1,542 @@
+!	*********************************************************************************
+!	*********************************************************************************
+!
+!
+subroutine AdvanceOneTimestep
+
+	use param
+	use Alg2Defs
+	use Alg2ConcentrationAdvanceModule
+
+	implicit none
+
+
+!Advances one timestep
+	call ExtractUVW !(c, g, pn, un, PsiS)
+	call FCTremasteredI
+	call RecoverConcentration !(c)
+	run_time = run_time + deltaT
+
+	if ( run_time>auxtime .and. run_time<=auxtime+2.d0*deltaT ) then
+	! find the closest time step to print at the intervals
+		auxtime = auxtime + timeinterval
+		printfunctions = 1
+		print *, ' 2D-simulation time = ', run_time
+	else
+		printfunctions = 0
+	endif
+
+end subroutine AdvanceOneTimestep
+
+!	*********************************************************************************
+!	*********************************************************************************
+
+
+subroutine ExtractUVW !(c,g,pn,un,PsiS)
+! plonks the concentration and velocities into U, v and w arrays
+! that are time-advanced subsequently.
+! NOTE: the arrays are shifted one cell to accomodate for two ghost
+! cells at the left and bottom edge
+
+	use param
+	use Alg2Defs
+	use Alg2ConcentrationAdvanceModule
+
+	implicit none
+
+
+	real*8 :: maxv, maxw
+
+	real*8:: hgp, max5S, min5S
+
+!  (PsiS + un)[i)[j] is stream function at i-1, j-1
+!  (g + pn)[0][i)[j] is d/dphi at i-1/2, j-1/2
+!  c[i)[j] is concentration at i-1/2, j-1/2
+!  cshift[i][j] is concentration at i-3/2, j-3/2  
+!  U[i][j] is c*H at i-3/2, j-3/2
+!  v[i][j] is phi-velocity at i-2,j-3/2
+!  w[i][j] is z-velocity at i-3/2,j-2	
+
+	maxv = 0.d0;  maxw = 0.d0;
+
+	! Set v
+	do jAR = 1,MaxJ
+		v(2,jAR+1) = 0.d0; v(MaxI+2,jAR+1) = 0.0d0
+		do iAR = 2,MaxI
+			if (Imoving == 1) then
+! moving frame
+				v(iAR+1, jAR+1) = - (un(iAR,jAR+1) - un(iAR,jAR))/deltaY & 
+						/(hgp((iAR-1)*deltaX, e));
+			else
+! fixed frame
+				v(iAR+1,jAR+1) = - (PsiS(iAR,jAR+1) + un(iAR,jAR+1) - PsiS(iAR,jAR)  &
+						- un(iAR,jAR))/deltaY /hgp((real(iAR,8)-1.0d0)*deltaX, e)
+			endif;
+			maxv = max(dabs(v(iAR+1,jAR+1)), maxv)
+		enddo
+		!fill in the ghost cells with the reflections
+		v(1, jAR+1) = - v(3, jAR+1);
+		v(0, jAR+1) = - v(4, jAR+1);
+		v(MaxI+3, jAR+1) = - v(MaxI+1, jAR+1);
+		v(MaxI+4, jAR+1) = - v(MaxI, jAR+1);
+	enddo
+
+	!two cells top & bottom
+	do iAR = 0, MaxI+4
+		v(iAR, 1) = v(iAR, 2);
+		v(iAR, 0) = v(iAR, 2);
+		v(iAR, MaxJ+3) = v(iAR, MaxJ+1);
+		v(iAR, MaxJ+2) = v(iAR, MaxJ+1);
+	enddo
+
+	! Set w
+	do jAR = 1, MaxJ+1
+		do iAR = 1, MaxI
+			if (Imoving == 1) then
+! moving frame
+				w(iAR+1, jAR+1) = (un(iAR+1, jAR) - un(iAR, jAR)) /deltaX/hgp((real(iAR,8)-0.5d0)*deltaX, e);
+			else
+! fixed frame
+    			w(iAR+1, jAR+1) = (PsiS(iAR+1, jAR) + un(iAR+1, jAR) - PsiS(iAR, jAR) - un(iAR, jAR)) &
+												/deltaX/hgp((real(iAR,8)-0.5d0)*deltaX, e);
+			endif
+
+			maxw = max(dabs(w(iAR+1, jAR+1)), maxw);
+		enddo
+		w(1, jAR+1) = w(2, jAR+1); 
+		w(0, jAR+1) = w(3, jAR+1); 
+		w(MaxI+2, jAR+1) = w(MaxI+1, jAR+1); 
+		w(MaxI+3, jAR+1) = w(MaxI, jAR+1); 
+	enddo
+
+	!two cells top & bottom
+	do iAR = 0, MaxI+3
+		w(iAR, 0) = w(iAR, 2);
+		w(iAR, 1) = w(iAR, 2);
+		w(iAR, MaxJ+4) = w(iAR, MaxJ+2);
+		w(iAR, MaxJ+3) = w(iAR, MaxJ+2);
+	enddo
+	! set timestep
+!*******
+	deltaT = CFL / ((maxv/deltaX) + (maxw/deltaY));
+
+
+	do iAR = 1, MaxI
+		do jAR = 1, MaxJ
+			U(iAR+1, jAR+1) = c(iAR, jAR) * hgp((real(iAR,8)-0.5d0)*deltaX, e);
+			Cshift(iAR+1, jAR+1) = c(iAR, jAR);
+		enddo
+	enddo
+	!fill in the ghost cells with the reflections
+	!two cells to each side
+	do jAR = 2, MaxJ+1;
+		U(1, jAR) = U(2, jAR);
+		Cshift(1, jAR) = Cshift(2, jAR);
+		U(0, jAR) = U(3, jAR);
+		Cshift(0, jAR) = Cshift(3, jAR);
+		U(MaxI+2, jAR) = U(MaxI+1, jAR);
+		Cshift(MaxI+2, jAR) = Cshift(MaxI+1, jAR);
+		U(MaxI+3, jAR) = U(MaxI, jAR);
+		Cshift(MaxI+3, jAR) = Cshift(MaxI, jAR);
+	enddo
+	!two cells top & bottom
+	do iAR = 0, MaxI+3
+		U(iAR, 1) = U(iAR, 2);
+		Cshift(iAR, 1) = Cshift(iAR, 2);
+		U(iAR, 0) = U(iAR, 2);
+		Cshift(iAR, 0) = Cshift(iAR, 2);
+		U(iAR, MaxJ+2) = U(iAR, MaxJ+1);
+		Cshift(iAR, MaxJ+2) = Cshift(iAR, MaxJ+1);
+		U(iAR, MaxJ+3) = U(iAR, MaxJ+1);
+		Cshift(iAR, MaxJ+3) = Cshift(iAR, MaxJ+1);
+	enddo
+
+end subroutine ExtractUVW
+
+!	*********************************************************************************
+!	*********************************************************************************
+
+	subroutine FCTremasteredI
+
+	use param
+	use Alg2Defs
+	use Alg2ConcentrationAdvanceModule
+
+	implicit none
+
+	!This is FCT scheme following 
+	!Ferguson '92 report, with prelimiting
+
+	real*8, dimension (0:MaxI+3, 0:MaxJ+3):: Flow, Glow, Fhi, Ghi, ADFi, ADFj, Utd
+	real*8, dimension (0:MaxI+3, 0:MaxJ+3):: Pplus, Pminus, Qplus, Qminus, Rplus, Rminus
+	real*8:: hgp, max5S, min5S
+	real*8:: sigma_ijph, sigma_iphj
+
+
+	!Steps 1 - 3
+	!Compute Flow and Glow - the fluxes (?) at the
+	!control volume boundaries using a low order
+	!monotonic scheme - donor-cell upwind discretization.
+	!Also compute Fhi and Ghi - the high order
+	!fluxes using central difference discretization
+	!
+	!Flow(iAR, jAR) is F^L_(i-2,j-3/2)
+	!Fhi(iAR, jAR) is F^H_(i-2,j-3/2)
+	!Glow(iAR, jAR) is G^L_(i-3/2,j-2)
+	!Ghi(iAR, jAR) is G^H_(i-3/2,j-2)
+	!
+	!Thereafter get the anti-diffusive fluxes.
+	!ADFi and ADFj
+
+	do iAR = 1, MaxI+3
+		do jAR = 0, MaxJ+3
+			Fhi(iAR, jAR) = 0.5d0*(U(iAR, jAR)+U(iAR-1, jAR))*v(iAR, jAR)*(deltaT / deltaX);
+			if (v(iAR, jAR) >= 0.0d0) then
+				Flow(iAR, jAR) = v(iAR, jAR)*U(iAR-1, jAR)*(deltaT / deltaX);
+			else
+				Flow(iAR, jAR) = v(iAR, jAR)*U(iAR, jAR)*(deltaT / deltaX);
+			endif
+
+			ADFi(iAR, jAR) = Fhi(iAR, jAR) - Flow(iAR, jAR);
+		enddo
+	enddo
+
+	do jAR=1, MaxJ+3
+		do iAR=0, MaxI+3
+			Ghi(iAR, jAR) = 0.5d0*(U(iAR, jAR-1) + U(iAR, jAR))*w(iAR, jAR)*(deltaT / deltaY);
+			if (w(iAR, jAR) >= 0.0d0)  then
+				Glow(iAR, jAR) = w(iAR, jAR)*U(iAR, jAR-1)*(deltaT / deltaY);
+			else
+				Glow(iAR, jAR) = w(iAR, jAR)*U(iAR, jAR)*(deltaT / deltaY);
+			endif
+			ADFj(iAR, jAR) = Ghi(iAR, jAR) - Glow(iAR, jAR);
+		enddo
+	enddo
+
+	!Step 4
+	!Compute the low order time advance solution
+	do jAR=1, MaxJ+2
+		do iAR=1, MaxI+2
+			Utd(iAR, jAR) = U(iAR, jAR) - (Flow(iAR+1, jAR) - Flow(iAR, jAR)) - &
+				 (Glow(iAR, jAR+1) - Glow(iAR, jAR));
+		enddo
+		Utd(0, jAR) = Utd(3, jAR);
+		Utd(MaxI+3, jAR) = Utd(MaxI, jAR);
+	enddo
+	do iAR=0, MaxI+3
+		Utd(iAR, MaxJ+3) = Utd(iAR, MaxJ+2);
+		Utd(iAR, 0) = Utd(iAR, 1);
+	enddo
+	
+	! Step 5
+	! Prelimit the antidiffusive fluxes
+	do iAR = 3, MaxI+2
+		do jAR = 0, MaxJ+3
+			sigma_ijph = 1.0d0;
+			if (Utd(iAR, jAR) - Utd(iAR-1, jAR) < 0.0d0) then
+				sigma_ijph = -1.0d0;
+			endif;
+			ADFi(iAR, jAR) = sigma_ijph*max(min(min(abs(ADFi(iAR, jAR)), &
+				sigma_ijph*(Utd(iAR-1, jAR) - Utd(iAR-2, jAR))),sigma_ijph*(Utd(iAR+1, jAR) - Utd(iAR, jAR))),0.0);
+		enddo
+	enddo
+
+	do jAR=3, MaxJ+2
+		do iAR=0, MaxI+3
+			sigma_iphj = 1.0d0;
+			if (Utd(iAR, jAR) - Utd(iAR, jAR-1) < 0.0d0) then
+				sigma_iphj = -1.0;
+			endif;
+			ADFj(iAR, jAR) = sigma_iphj*max(min(min(abs(ADFj(iAR, jAR)), &
+				sigma_iphj*(Utd(iAR, jAR-1) - Utd(iAR, jAR-2))),sigma_iphj*(Utd(iAR, jAR+1) - Utd(iAR, jAR))),0.0);
+		enddo
+	enddo
+
+	! Step 6 - Limit the antidiffusive fluxes (ADFs)
+	! Sum anti-diffusive fluxes into and out of each cell to get P+ and P-
+	do jAR=1, MaxJ+2
+		do iAR=1, MaxI+2
+			Pplus(iAR, jAR) = max(0.0d0,ADFi(iAR, jAR)) - min(0.0d0,ADFi(iAR+1, jAR)) &
+							+ max(0.0d0,ADFj(iAR, jAR)) - min(0.0d0,ADFj(iAR, jAR+1));
+			Pminus(iAR, jAR) = max(0.0d0,ADFi(iAR+1, jAR)) - min(0.0d0,ADFi(iAR, jAR)) &
+							+ max(0.0d0,ADFj(iAR, jAR+1)) - min(0.0d0,ADFj(iAR, jAR));
+		enddo		
+	enddo	
+
+	! Get Q+ and Q-
+	! Get R+ and R-
+	do jAR=1, MaxJ+2 
+		do iAR=1, MaxI+2
+			Qplus(iAR, jAR) = Max5S(Utd(iAR,jAR),Utd(iAR+1,jAR),Utd(iAR-1,jAR),Utd(iAR,jAR+1),Utd(iAR,jAR-1))-Utd(iAR,jAR);
+
+			if (Pplus(iAR, jAR) > 0.0d0) then
+				Rplus(iAR, jAR) = min(1.0d0,Qplus(iAR, jAR)/Pplus(iAR, jAR));
+			else
+				Rplus(iAR, jAR) = 0.0d0;
+			endif
+
+			Qminus(iAR, jAR) = Utd(iAR, jAR)-Min5S(Utd(iAR,jAR),Utd(iAR+1,jAR),Utd(iAR-1,jAR),Utd(iAR,jAR+1),Utd(iAR,jAR-1));
+
+			if (Pminus(iAR, jAR) > 0.0d0) then
+				Rminus(iAR, jAR) = min(1.0d0,Qminus(iAR, jAR)/Pminus(iAR, jAR));
+			else
+				Rminus(iAR, jAR) = 0.0d0;
+			endif
+
+		enddo
+	enddo
+
+	!Step 6 Final
+	!Compute corrections Ci and Cj 
+	!and limit the antidiffusive fluxes ADFi and ADFj
+	do iAR=2, MaxI+2
+		do jAR=1, MaxJ+2
+			if (ADFi(iAR, jAR) >= 0.0d0) then
+				ADFi(iAR, jAR) = ADFi(iAR, jAR)* min(Rplus(iAR, jAR),Rminus(iAR-1, jAR));
+			else
+				ADFi(iAR, jAR) = ADFi(iAR, jAR)* min(Rplus(iAR-1, jAR),Rminus(iAR, jAR));
+			endif
+		enddo
+	enddo
+
+	do jAR=2, MaxJ+2
+		do iAR=1, MaxI+2
+			if (ADFj(iAR, jAR) >= 0.0d0) then
+				ADFj(iAR, jAR) = ADFj(iAR, jAR)* min(Rplus(iAR, jAR),Rminus(iAR, jAR-1));
+			else
+				ADFj(iAR, jAR) = ADFj(iAR, jAR)* min(Rplus(iAR, jAR-1),Rminus(iAR, jAR));
+			endif
+		enddo
+	enddo
+
+	!Step 6
+	!Apply the limited antidiffusive fluxes
+	do iAR=2, MaxI+1
+		do jAR=3, MaxJ+1
+			U(iAR, jAR) = Utd(iAR, jAR) - (ADFi(iAR+1, jAR) - ADFi(iAR, jAR) + &
+				  ADFj(iAR, jAR+1) - ADFj(iAR, jAR));
+		enddo
+	enddo
+
+end subroutine FCTremasteredI
+
+!	*********************************************************************************
+!	*********************************************************************************
+
+	subroutine FCTremastered
+
+	use param
+	use Alg2Defs
+	use Alg2ConcentrationAdvanceModule
+
+	implicit none
+
+	!This is FCT scheme following 
+	!Ferguson '92 report
+
+	real*8, dimension (0:MaxI+3, 0:MaxJ+3):: Flow, Glow, Fhi, Ghi, ADFi, ADFj, Utd
+	real*8, dimension (0:MaxI+3, 0:MaxJ+3):: Pplus, Pminus, Qplus, Qminus, Rplus, Rminus
+	real*8:: hgp, max5S, min5S
+
+
+	!Steps 1 - 3
+	!Compute Flow and Glow - the fluxes (?) at the
+	!control volume boundaries using a low order
+	!monotonic scheme - donor-cell upwind discretization.
+	!Also compute Fhi and Ghi - the high order
+	!fluxes using central difference discretization
+	!
+	!Flow(iAR, jAR) is F^L_(i-2,j-3/2)
+	!Fhi(iAR, jAR) is F^H_(i-2,j-3/2)
+	!Glow(iAR, jAR) is G^L_(i-3/2,j-2)
+	!Ghi(iAR, jAR) is G^H_(i-3/2,j-2)
+	!
+	!Thereafter get the anti-diffusive fluxes.
+	!ADFi and ADFj
+
+	do iAR = 1, MaxI+3
+		do jAR = 0, MaxJ+3
+			Fhi(iAR, jAR) = 0.5d0*(U(iAR, jAR)+U(iAR-1, jAR))*v(iAR, jAR);
+			if (v(iAR, jAR) >= 0.0d0) then
+				Flow(iAR, jAR) = v(iAR, jAR)*U(iAR-1, jAR);
+			else
+				Flow(iAR, jAR) = v(iAR, jAR)*U(iAR, jAR);
+			endif
+
+			ADFi(iAR, jAR) = Fhi(iAR, jAR) - Flow(iAR, jAR);
+		enddo
+	enddo
+
+	do jAR=1, MaxJ+3
+		do iAR=0, MaxI+3
+			Ghi(iAR, jAR) = 0.5d0*(U(iAR, jAR-1) + U(iAR, jAR))*w(iAR, jAR);
+			if (w(iAR, jAR) >= 0.0d0)  then
+				Glow(iAR, jAR) = w(iAR, jAR)*U(iAR, jAR-1);
+			else
+				Glow(iAR, jAR) = w(iAR, jAR)*U(iAR, jAR);
+			endif
+			ADFj(iAR, jAR) = Ghi(iAR, jAR) - Glow(iAR, jAR);
+		enddo
+	enddo
+
+	!Step 4
+	!Compute the low order time advance solution
+	do jAR=1, MaxJ+2
+		do iAR=1, MaxI+2
+			Utd(iAR, jAR) = U(iAR, jAR) -  &
+				 (Flow(iAR+1, jAR) - Flow(iAR, jAR))*(deltaT / deltaX) - &
+				 (Glow(iAR, jAR+1) - Glow(iAR, jAR))*(deltaT / deltaY);
+		enddo
+	enddo
+	!Step5 - Limit the antidiffusive fluxes (ADFs)
+	!5.1 & 5.4 Sum anti-diffusive fluxes into and 
+	!out of each cell to get P+ and P-
+	do jAR=1, MaxJ+2
+		do iAR=1, MaxI+2
+			Pplus(iAR, jAR) = max(0.0d0,ADFi(iAR, jAR)) - min(0.0d0,ADFi(iAR+1, jAR)) &
+							+ max(0.0d0,ADFj(iAR, jAR)) - min(0.0d0,ADFj(iAR, jAR+1));
+			Pminus(iAR, jAR) = max(0.0d0,ADFi(iAR+1, jAR)) - min(0.0d0,ADFi(iAR, jAR)) &
+							+ max(0.0d0,ADFj(iAR, jAR+1)) - min(0.0d0,ADFj(iAR, jAR));
+		enddo		
+	enddo	
+
+	!5.2 & 5.5 - Get Q+ and Q-
+	!5.3 & 5.6 - Get R+ and R-
+	do jAR=1, MaxJ+2 
+		do iAR=1, MaxI+2
+			Qplus(iAR, jAR) = deltaX * deltaY * (hgp((real(iAR,8)-1.5d0)*deltaX, e) &
+				* Max5S(Cshift(iAR, jAR), Cshift(iAR+1, jAR), & 
+				Cshift(iAR-1, jAR), Cshift(iAR, jAR+1), Cshift(iAR, jAR-1))  &
+				- Utd(iAR, jAR));
+
+			if (Pplus(iAR, jAR) > 0.0d0) then
+				Rplus(iAR, jAR) = min(1.0d0,Qplus(iAR, jAR)/Pplus(iAR, jAR));
+			else
+				Rplus(iAR, jAR) = 0.0d0;
+			endif
+
+			Qminus(iAR, jAR) = deltaX * deltaY *(Utd(iAR, jAR)- &
+				hgp((real(iAR,8)-1.5d0)*deltaX, e) &
+				* Min5S(Cshift(iAR, jAR), Cshift(iAR+1, jAR), &
+				Cshift(iAR-1, jAR),	Cshift(iAR, jAR+1), Cshift(iAR, jAR-1)));
+
+			if (Pminus(iAR, jAR) > 0.0d0) then
+				Rminus(iAR, jAR) = min(1.0d0,Qminus(iAR, jAR)/Pminus(iAR, jAR));
+			else
+				Rminus(iAR, jAR) = 0.0d0;
+			endif
+
+		enddo
+	enddo
+
+	!Step 5 Final
+	!Compute corrections Ci and Cj 
+	!and limit the antidiffusive fluxes ADFi and ADFj
+	do iAR=2, MaxI+2
+		do jAR=1, MaxJ+2
+			if (ADFi(iAR, jAR) >= 0.0d0) then
+				ADFi(iAR, jAR) = ADFi(iAR, jAR)* min(Rplus(iAR, jAR),Rminus(iAR-1, jAR));
+			else
+				ADFi(iAR, jAR) = ADFi(iAR, jAR)* min(Rplus(iAR-1, jAR),Rminus(iAR, jAR));
+			endif
+		enddo
+	enddo
+
+	do jAR=2, MaxJ+2
+		do iAR=1, MaxI+2
+			if (ADFj(iAR, jAR) >= 0.0d0) then
+				ADFj(iAR, jAR) = ADFj(iAR, jAR)* min(Rplus(iAR, jAR),Rminus(iAR, jAR-1));
+			else
+				ADFj(iAR, jAR) = ADFj(iAR, jAR)* min(Rplus(iAR, jAR-1),Rminus(iAR, jAR));
+			endif
+		enddo
+	enddo
+
+	!Step 6
+	!Apply the limited antidiffusive fluxes
+	do iAR=2, MaxI+1
+		do jAR=3, MaxJ+1
+			U(iAR, jAR) = Utd(iAR, jAR) - deltaT*(ADFi(iAR+1, jAR) - ADFi(iAR, jAR) + &
+				  ADFj(iAR, jAR+1) - ADFj(iAR, jAR) )/(deltaX * deltaY);
+		enddo
+	enddo
+
+end subroutine FCTremastered
+
+!	*********************************************************************************
+!	*********************************************************************************
+
+
+subroutine RecoverConcentration
+
+	use param
+	use Alg2Defs
+	use Alg2ConcentrationAdvanceModule
+	
+	implicit none
+
+
+	real*8:: hgp
+
+
+!recovers concentration field after
+!the FCT scheme is finished
+
+	do iAR = 1, MaxI
+		do jAR = 1, MaxJ
+			c(iAR, jAR) = U(iAR+1, jAR+1) / hgp((real(iAR,8)-0.5d0)*deltaX, e);
+			if (c(iAR, jAR) > 1.0d0) then; c(iAR, jAR) = 1.0d0; endif
+			if (c(iAR, jAR) < 0.0d0) then; c(iAR, jAR) = 0.0d0; endif
+		enddo
+		if (w(iAR+1, 1) > 0.0d0) then
+			c(iAR, 0) = 0.0d0; !bottom fluid coming in
+		else
+			c(iAR, 0) = c(iAR, 1); 
+		endif
+		if (w(iAR+1, MaxJ+1) > 0.0d0) then
+			c(iAR, MaxJ+1) = c(iAR, MaxJ); !top fluid going out
+		else
+			c(iAR, MaxJ+1) = 1.0d0;
+		endif
+	enddo
+	
+	!set up the boundary cells too
+	do jAR = 0, MaxJ+1
+		c(0, jAR) = c(1, jAR);
+		c(MaxI+1, jAR) = c(MaxI, jAR);
+	enddo
+
+end subroutine RecoverConcentration
+
+!	*********************************************************************************
+!	*********************************************************************************
+
+function Min5S(x1, x2, x3, x4, x5)
+
+	implicit none
+
+	real*8:: Min5S
+
+	real*8:: x1, x2, x3, x4, x5
+
+	Min5S = min(min(min(x1, x2), min(x3, x4)), x5)
+
+end function Min5S
+
+!	*********************************************************************************
+!	*********************************************************************************
+
+
+function Max5S(x1, x2, x3, x4, x5)
+
+	implicit none
+
+	real*8:: Max5S
+
+	real*8:: x1, x2, x3, x4, x5
+
+	Max5S = max(max(max(x1, x2), max(x3, x4)), x5);
+
+end function Max5S
+
+

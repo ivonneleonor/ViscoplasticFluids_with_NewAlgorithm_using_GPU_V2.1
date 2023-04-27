@@ -1,0 +1,87 @@
+Q_in =
+
+     1
+     1
+
+
+zMD =
+
+   19.5883
+
+
+time =
+
+         0
+   20.1599
+
+
+tend =
+
+   20.1599
+
+
+rho =
+
+     1
+     1
+
+
+tauY =
+
+     0
+     0
+
+
+kappa =
+
+     1     0
+     1     0
+
+
+Stokes =
+
+    0.2332
+
+
+Stokes =
+
+    0.2332
+
+time 0 2D-simulation time = 2.587166 
+time 1 2D-simulation time = 5.174331 
+time 2 2D-simulation time = 7.761497 
+time 3 2D-simulation time = 10.236177 
+time 4 2D-simulation time = 12.823342 
+time 5 2D-simulation time = 15.410507 
+time 6 2D-simulation time = 17.885188 
+time 7 2D-simulation time = 20.472353 
+time 8 2D-simulation time = 23.059519 
+time 9 2D-simulation time = 25.534199 
+time 10 2D-simulation time = 28.121365 
+time 11 2D-simulation time = 30.708530 
+time 11 2D-simulation time = 33.295696 
+time 12 2D-simulation time = 35.770376 
+time 13 2D-simulation time = 38.357541 
+time 14 2D-simulation time = 40.944707 
+>>  .txt
+
+fprintf('time 0 2D-simulation time = %f \n', 0.5067730611704961 * Dt_star);
+fprintf('time 1 2D-simulation time = %f \n',1.013546098841142 * Dt_star);
+fprintf('time 2 2D-simulation time = %f \n',1.520319166943423 * Dt_star);
+fprintf('time 3 2D-simulation time = %f \n',2.005058623500945  * Dt_star);
+fprintf('time 4 2D-simulation time = %f \n',2.511831442910186 * Dt_star);
+fprintf('time 5 2D-simulation time = %f \n',3.018604425429904 * Dt_star);
+fprintf('time 6 2D-simulation time = %f \n',3.503343882305884 * Dt_star);
+fprintf('time 7 2D-simulation time = %f \n',4.010116941701717 * Dt_star);
+fprintf('time 8 2D-simulation time = %f \n',4.516890009788050  * Dt_star);
+fprintf('time 9 2D-simulation time = %f \n',5.001629401422624 * Dt_star);
+fprintf('time 10 2D-simulation time = %f \n',5.508402452542035 * Dt_star);
+fprintf('time 11 2D-simulation time = %f \n',6.015175521221433 * Dt_star);
+fprintf('time 11 2D-simulation time = %f \n',6.521948494570387 * Dt_star);
+fprintf('time 12 2D-simulation time = %f \n',7.006687923869385  * Dt_star);
+fprintf('time 13 2D-simulation time = %f \n',7.513460944023139 * Dt_star);
+fprintf('time 14 2D-simulation time = %f \n',8.020234009469121 * Dt_star);
+
+
+
+

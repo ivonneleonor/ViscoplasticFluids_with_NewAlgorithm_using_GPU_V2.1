@@ -1,0 +1,636 @@
+
+program Alg2Fix
+
+	use Alg2Defs
+	use param
+    use cudafor
+    use AdPparallel 
+    use Alg2IterationsModule
+    use alg2concentrationadvancemodule
+
+	implicit none
+
+
+!>variable in RunTimeAdvance
+!!variable in RunTimeAdvance
+        integer:: CounterOfTimesteps;
+!>variable in Alg2Run
+	integer:: NumberOfAlg2Iterations
+        logical:: EstimationOfLambdaRequired
+        integer:: CounterOfIterations   
+        real*8:: rho
+        integer::iin,jin
+!valiables AdvanceP
+	real*8:: x1, x2,x
+	real*8:: theta1, theta2, dthetaold, dtheta
+	real*8:: rts, f, df, temp
+	real*8:: Xiret1
+	real*8:: test1, test2
+	real*8:: dXidGPSI
+	real*8:: tauY, hgp, kappa, m
+    integer:: counterAP
+ !end  AdvanceP     
+    real*8:: alphaAU, betaAU, gammaAU,alpha,invalpha	
+	real*8, dimension(0:MaxI+2,0:MaxJ+2),device:: fij_d
+	integer:: IterationCounter
+    real*8:: Emax, deltaUn     
+    
+    real*8 :: maxv=0.0, maxw=0.0
+    real*8:: max5s, min5s
+ !FCT variables
+    real*8, dimension (0:MaxI+3, 0:MaxJ+3):: flow, glow, fhi, ghi, adfi, adfj, utd
+    real*8, dimension (0:MaxI+3, 0:MaxJ+3):: pplus, pminus, qplus, qminus, rplus, rminus
+  ! real*8:: hgp, max5s, min5s
+    real*8:: sigma_ijph, sigma_iphj
+!end  FCT variables
+    real*8,device:: deltat_d
+
+
+type (dim3) :: dimGrid, dimBlock
+real :: h_idata(nx,ny), h_cdata(nx,ny), h_tdata(ny,nx), gold(ny,nx)
+real, device :: d_idata(nx,ny), d_cdata(nx,ny), d_tdata(ny,nx)
+integer, device :: iarr(100)
+real*8, dimension( 0:MaxI+2, 0:MaxJ+2):: fij
+
+
+! check parameters and calculate execution configuration
+  if (mod(nx, TILE_DIM) /= 0 .or. mod(ny, TILE_DIM) /= 0) then
+     write(*,*) 'nx and ny must be a multiple of TILE_DIM'
+     stop
+  end if
+
+  if (mod(TILE_DIM, BLOCK_ROWS) /= 0) then
+     write(*,*) 'TILE_DIM must be a multiple of BLOCK_ROWS'
+     stop
+  end if
+
+  dimGrid = dim3(nx/TILE_DIM, ny/TILE_DIM, 1)
+  dimBlock = dim3(TILE_DIM, BLOCK_ROWS, 1)
+ 
+
+    auxtime = timeinterval
+
+	
+!	print *, ' '
+!	print *, 'COMPUTING 2-D... please wait'
+
+       if (Imoving == 1) then
+                open(36,file = 'MMeshSize.txt',status = 'replace')
+        else
+                open(36,file = 'MeshSize.txt',status = 'replace')
+        endif
+        write(36,*) MaxI, MaxJ, deltaX, deltaY
+
+        close(36)
+
+
+
+	if (Imoving == 1) then
+		open(35,file = './MStream.txt',status = 'replace')
+                open(37,file = './MStream.txt',status = 'replace')
+	else
+		open(35,file = './Stream.txt',status = 'replace')
+                open(37,file = './Plots/Stream2.txt',status = 'replace')
+
+		open(40,file= './Plots/un.txt',status = 'replace')
+      		open(41,file= './Plots/PsiS.txt',status = 'replace')
+        	open(42,file= './Plots/u.txt',status = 'replace')
+        	open(43,file= './Plots/v.txt',status = 'replace')
+        	open(44,file= './Plots/w.txt',status = 'replace')
+
+	endif
+
+
+
+! Main time loop RunTimeAdvance
+
+        call SetUpInitialConditions
+       
+!        do iin = 1, MaxI
+!            do jin = 1, MaxJ
+!                write(*,*)c(iin,jin)
+!            enddo
+!        enddo
+
+!        call Alg2Run(NoOfIterationsInAlg2FirstPass,.true.);
+
+!Alg2Run starts
+
+NumberOfAlg2Iterations=NoOfIterationsInAlg2FirstPass
+EstimationOfLambdaRequired=.true.
+
+         ! establish G and re-set lambda_n to optimal if required
+                if (EstimationOfLambdaRequired .eqv. .true.) then
+                        ! First get the G0/G1 - pressure heads at the 
+                        ! top and bottom of the well - by inverting the 
+                        ! flux integrals
+                        call EstablishPsi0PsiL
+                        call Establishg
+
+                        do j = 1, MaxJ
+                                do i = 1,MaxI
+                                         if (c(i, j) == 1.0d0) then
+!                                                lambdan(0, i, j) = GL;
+                                                 lambdan(0, i, j) = GL-rho(c(i, j))*dcos(beta)/StStar;
+                                         else
+!                                                lambdan(0, i, j) = G0;
+                                                 lambdan(0, i, j) = G0-rho(c(i, j))*dcos(beta)/StStar;
+                                         endif
+!                                        lambdan(1, i, j) = 0;
+                                         lambdan(1, i, j) = rho(c(i, j))*dsin(beta)* &
+                                                dsin(Pi*(real(i,8) - 0.5d0) * deltaX)/StStar;
+                                enddo
+                        enddo
+                endif
+
+                ! perform the Alg2 iteration
+                do CounterOfIterations = 1, NumberOfAlg2Iterations
+                     !   call AdvanceU;
+                     
+                      ! first establish the RHS of Poisson
+	
+	
+fij_d=fij
+pn_d=pn
+lambdan_d=lambdan
+	
+call RHS<<<dimGrid, dimBlock>>>(lambdan_d,fij_d,pn_d)
+
+fij=fij_d
+pn=pn_d
+lambdan=lambdan_d
+
+	! do j = 2, MaxJ
+	!	 do i = 2,MaxI
+	!			fij(i, j) =  & 
+	!			 	0.5d0*deltaY*( (pn(0, i-1, j-1) + pn(0, i-1, j) - pn(0, i, j) &
+	!			    - pn(0, i, j-1)) - (lambdan(0, i-1, j-1) + lambdan(0, i-1, j) &
+	!				- lambdan(0, i, j) - lambdan(0, i, j-1)) ) + 0.5d0*deltaX *   &
+	!	            ( (pn(1, i-1, j-1) + pn(1, i, j-1) - pn(1, i-1, j) - pn(1, i, j)) - &
+ 	!			 	(lambdan(1, i-1, j-1) + lambdan(1, i, j-1) - lambdan(1, i-1, j)  &
+	!				- lambdan(1, i, j)) );
+	!	 enddo
+	! enddo
+
+	 ! now iterate through (Gauss-Seidel)
+	 alpha = deltaX/deltaY;
+	 invalpha = deltaY/deltaX;
+	 do IterationCounter = 1, NoOfIterationsInGS
+		 Emax = 0;
+		 j = 2;
+		 do i = 2,MaxI
+			deltaUn = 0.125d0*(un(i+1, j+1) + un(i-1, j+1) + un(i-1, j+1) + un(i+1, j+1))    &
+				+ 0.25d0*(2.0d0*alpha - invalpha)/(alpha+invalpha)*(un(i, j+1) + un(i, j+1)) &
+				+ 0.25d0*(2.0d0*invalpha - alpha)/(alpha+invalpha)*(un(i+1, j) + un(i-1, j)) &	
+				+ 0.75d0/(alpha+invalpha)*fij(i, j);
+			if (dabs(un(i, j) - deltaUn) > Emax) then
+				Emax = dabs(un(i, j) - deltaUn)
+			endif
+			un(i, j) = (1.0d0-sor)*un(i, j) + sor*deltaUn;
+		 enddo
+		 do j = 3, MaxJ-1
+			 do i = 2,MaxI
+				deltaUn = 0.125d0*(un(i+1, j+1) + un(i-1, j+1) + un(i-1, j-1) + un(i+1, j-1))    &
+					+ 0.25d0*(2.0d0*alpha - invalpha)/(alpha+invalpha)*(un(i, j+1) + un(i, j-1)) &
+					+ 0.25d0*(2.0d0*invalpha - alpha)/(alpha+invalpha)*(un(i+1, j) + un(i-1, j)) &	
+					+ 0.75d0/(alpha+invalpha)*fij(i, j);
+				if (dabs(un(i, j) - deltaUn) > Emax) then 
+					Emax = dabs(un(i, j) - deltaUn);
+				endif
+				un(i, j) = (1.0d0-sor)*un(i, j) + sor*deltaUn;
+			 enddo
+		 enddo
+		 j = MaxJ;
+		 do i = 2,MaxI
+			deltaUn = 0.125d0*(un(i+1, j-1) + un(i-1, j-1) + un(i-1, j-1) + un(i+1, j-1))    &
+				+ 0.25d0*(2.0d0*alpha - invalpha)/(alpha+invalpha)*(un(i, j-1) + un(i, j-1)) &
+				+ 0.25d0*(2.0d0*invalpha - alpha)/(alpha+invalpha)*(un(i+1, j) + un(i-1, j)) &	
+				+ 0.75d0/(alpha+invalpha)*fij(i, j);
+			if (dabs(un(i, j) - deltaUn) > Emax) then
+				Emax = dabs(un(i, j) - deltaUn);
+			endif
+			un(i, j) = (1.0d0-sor)*un(i, j) + sor*deltaUn;
+		 enddo
+		 do i = 1,MaxI+1
+			un(i, 1) = un(i, 2);
+			un(i, MaxJ+1) = un(i, MaxJ);		
+		 enddo
+
+		 if (Emax < ToleranceInGS) then; exit; endif
+	enddo
+              
+                     
+  ! end call AdvanceU
+   call AdvanceP;
+  !call AdvanceLambda;
+       lambdan_d=lambdan
+       pn_d=pn
+       un_d=un
+
+
+call AdvanceLambdad<<<dimGrid, dimBlock>>>(lambdan_d,un_d,pn_d)
+         
+                
+                        ! do j = 1,maxj
+                         !   do i = 1, maxi
+                          !       lambdan(0, i, j) = lambdan(0, i, j) +  ron * ( - pn(0, i, j) &
+                           !      + (un(i+1, j+1) - un(i, j+1))/(2.0d0 * deltax) &
+                            !     + (un(i+1, j) - un(i, j))/(2.0d0 * deltax));
+                             !    lambdan(1, i, j) = lambdan(1, i, j) + ron * (- pn(1, i, j) &
+                              !   + (un(i+1, j+1) - un(i+1, j))/(2.0d0 * deltay) &
+                               !  + (un(i, j+1) - un(i, j))/(2.0d0 * deltay));
+                       !      enddo
+                       !  enddo
+   
+   lambdan=lambdan_d
+   pn=pn_d
+   un=un_d
+                            
+                       ! do j = 1,maxj
+                       !     do i = 1, maxi
+                      !         write(*,*) 'lambdan(0, i, j)', lambdan(0, i, j),'lambdan(1, i, j)', lambdan(1, i, j)
+                       !      enddo
+                       !  enddo
+                  
+                  !end call AdvanceLambda;
+                              
+                enddo
+
+
+
+!Alg2Run ends
+
+     !  do iin = 1, MaxI
+     !       do jin = 1, MaxJ
+     !           write(*,*)un(iin,jin)
+     !       enddo
+     !   enddo
+
+
+
+        if (Imoving == 1) then
+                open(33,file = './MtwoD2.txt',status = 'replace')
+                open(34,file = './MtwoD.txt',status = 'replace')
+        else
+                open(33,file = './Plots/twoD2.txt',status = 'replace')
+                open(34,file = './twoD.txt',status = 'replace')
+                
+                
+
+        endif
+
+        call DrawStuff(1)
+
+        CounterOfTimesteps = 0;
+
+        do while (run_time < totaltime)
+        
+        
+                call DrawStuff(printfunctions)
+              
+                !call AdvanceOneTimestep
+               
+                !call extractuvw !(c, g, pn, un, PsiS)
+ 
+   if(kappa1<1.or.kappa2<1) then
+                 
+              
+              
+              !!   write(*,*)'run_time',run_time
+              !!   write(*,*)'deltaT',deltaT
+              !!   write(*,*) 'auxtime',auxtime
+
+              !!    do iin = 1, MaxI
+              !!         do jin = 1, MaxJ
+              !!              write(*,*)u(iin,jin)
+              !!          enddo
+              !!    enddo
+
+
+                do jAR = 1,MaxJ		
+		              do iAR = 2,MaxI
+                          maxv = max(dabs(v(iAR+1,jAR+1)), maxv) 
+                          maxw = max(dabs(w(iAR+1, jAR+1)), maxw);                       
+                      end do
+                end do
+                
+                deltaT = CFL / ((maxv/deltaX) + (maxw/deltaY));
+                             
+                !write(*,*)'deltat',deltat
+                !write(*,*)'maxv',maxv
+                !write(*,*)'maxw',maxw
+                  
+               maxv = 0.d0;  maxw = 0.d0;
+ 
+          !          ! Set v
+                      do jar = 1,maxj
+                          v(2,jar+1) = 0.d0; v(maxi+2,jar+1) = 0.0d0
+                            do iar = 2,maxi
+                              if (imoving == 1) then
+                              ! moving frame
+                                        v(iar+1, jar+1) = - (un(iar,jar+1) - un(iar,jar))/deltay & 
+                                                 /(hgp((iar-1)*deltax, e));
+                             else
+                              ! fixed frame
+                                 v(iar+1,jar+1) = - (psis(iar,jar+1) + un(iar,jar+1) - psis(iar,jar)  &
+                                                 - un(iar,jar))/deltay /hgp((real(iar,8)-1.0d0)*deltax, e)
+                               endif;
+                               maxv = max(dabs(v(iar+1,jar+1)), maxv)
+                        enddo
+                     !fill in the ghost cells with the reflections
+                     v(1, jar+1) = - v(3, jar+1);
+                     v(0, jar+1) = - v(4, jar+1);
+                     v(maxi+3, jar+1) = - v(maxi+1, jar+1);
+                     v(maxi+4, jar+1) = - v(maxi, jar+1);
+                     enddo
+ 
+                   !two cells top & bottom
+                    do iar = 0, maxi+4
+                        v(iar, 1) = v(iar, 2);
+                       v(iar, 0) = v(iar, 2);
+                        v(iar, maxj+3) = v(iar, maxj+1);
+                        v(iar, maxj+2) = v(iar, maxj+1);
+                    enddo
+ 
+                   ! Set w
+                  do jar = 1, maxj+1
+                       do iar = 1, maxi
+                         if (imoving == 1) then
+                        ! moving frame
+                                 w(iar+1, jar+1) = (un(iar+1, jar) - un(iar, jar)) /deltax/hgp((real(iar,8)-0.5d0)*deltax, e);
+                         else
+                         ! fixed frame
+                         w(iar+1, jar+1) = (psis(iar+1, jar) + un(iar+1, jar) - psis(iar, jar) - un(iar, jar)) &
+                                                                                                 /deltax/hgp((real(iar,8)-0.5d0)*deltax, e);
+                         endif
+           
+                         maxw = max(dabs(w(iar+1, jar+1)), maxw);
+                       enddo
+                           w(1, jar+1) = w(2, jar+1); 
+                           w(0, jar+1) = w(3, jar+1); 
+                           w(maxi+2, jar+1) = w(maxi+1, jar+1); 
+                           w(maxi+3, jar+1) = w(maxi, jar+1); 
+                 enddo
+ 
+         !two cells top & bottom
+              do iar = 0, maxi+3
+                 w(iar, 0) = w(iar, 2);
+                 w(iar, 1) = w(iar, 2);
+                 w(iar, maxj+4) = w(iar, maxj+2);
+                 w(iar, maxj+3) = w(iar, maxj+2);
+             enddo
+         ! set timestep
+         !*******
+         deltat = cfl / ((maxv/deltax) + (maxw/deltay));
+ 
+ 
+         do iar = 1, maxi
+                 do jar = 1, maxj
+                         u(iar+1, jar+1) = c(iar, jar) * hgp((real(iar,8)-0.5d0)*deltax, e);
+                         cshift(iar+1, jar+1) = c(iar, jar);
+                 enddo
+         enddo
+         !fill in the ghost cells with the reflections
+         !two cells to each side
+         do jar = 2, maxj+1;
+                 u(1, jar) = u(2, jar);
+                 cshift(1, jar) = cshift(2, jar);
+                 u(0, jar) = u(3, jar);
+                 cshift(0, jar) = cshift(3, jar);
+                 u(maxi+2, jar) = u(maxi+1, jar);
+                 cshift(maxi+2, jar) = cshift(maxi+1, jar);
+                 u(maxi+3, jar) = u(maxi, jar);
+                 cshift(maxi+3, jar) = cshift(maxi, jar);
+         enddo
+         !two cells top & bottom
+         do iar = 0, maxi+3
+                 u(iar, 1) = u(iar, 2);
+                 cshift(iar, 1) = cshift(iar, 2);
+                 u(iar, 0) = u(iar, 2);
+                 cshift(iar, 0) = cshift(iar, 2);
+                 u(iar, maxj+2) = u(iar, maxj+1);
+                 cshift(iar, maxj+2) = cshift(iar, maxj+1);
+                 u(iar, maxj+3) = u(iar, maxj+1);
+                 cshift(iar, maxj+3) = cshift(iar, maxj+1);
+         enddo
+ 
+                  
+                  !end call extractuvw
+                  
+                 ! call fctremasteredi
+                 
+                   !Steps 1 - 3
+         !Compute Flow and Glow - the fluxes (?) at the
+         !control volume boundaries using a low order
+         !monotonic scheme - donor-cell upwind discretization.
+         !Also compute Fhi and Ghi - the high order
+         !fluxes using central difference discretization
+         !
+         !Flow(iAR, jAR) is F^L_(i-2,j-3/2)
+         !Fhi(iAR, jAR) is F^H_(i-2,j-3/2)
+         !Glow(iAR, jAR) is G^L_(i-3/2,j-2)
+         !Ghi(iAR, jAR) is G^H_(i-3/2,j-2)
+         !
+         !Thereafter get the anti-diffusive fluxes.
+         !ADFi and ADFj
+ 
+         do iar = 1, maxi+3
+                 do jar = 0, maxj+3
+                         fhi(iar, jar) = 0.5d0*(u(iar, jar)+u(iar-1, jar))*v(iar, jar)*(deltat / deltax);
+                         if (v(iar, jar) >= 0.0d0) then
+                                 flow(iar, jar) = v(iar, jar)*u(iar-1, jar)*(deltat / deltax);
+                         else
+                                 flow(iar, jar) = v(iar, jar)*u(iar, jar)*(deltat / deltax);
+                         endif
+ 
+                         adfi(iar, jar) = fhi(iar, jar) - flow(iar, jar);
+                 enddo
+         enddo
+ 
+         do jar=1, maxj+3
+                 do iar=0, maxi+3
+                         ghi(iar, jar) = 0.5d0*(u(iar, jar-1) + u(iar, jar))*w(iar, jar)*(deltat / deltay);
+                         if (w(iar, jar) >= 0.0d0)  then
+                                 glow(iar, jar) = w(iar, jar)*u(iar, jar-1)*(deltat / deltay);
+                         else
+                                 glow(iar, jar) = w(iar, jar)*u(iar, jar)*(deltat / deltay);
+                         endif
+                         adfj(iar, jar) = ghi(iar, jar) - glow(iar, jar);
+                 enddo
+         enddo
+ 
+         !Step 4
+         !Compute the low order time advance solution
+         do jar=1, maxj+2
+                 do iar=1, maxi+2
+                         utd(iar, jar) = u(iar, jar) - (flow(iar+1, jar) - flow(iar, jar)) - &
+                                  (glow(iar, jar+1) - glow(iar, jar));
+                 enddo
+                 utd(0, jar) = utd(3, jar);
+                 utd(maxi+3, jar) = utd(maxi, jar);
+         enddo
+         do iar=0, maxi+3
+                 utd(iar, maxj+3) = utd(iar, maxj+2);
+                 utd(iar, 0) = utd(iar, 1);
+         enddo
+         
+         ! Step 5
+         ! Prelimit the antidiffusive fluxes
+         do iar = 3, maxi+2
+                 do jar = 0, maxj+3
+                         sigma_ijph = 1.0d0;
+                         if (utd(iar, jar) - utd(iar-1, jar) < 0.0d0) then
+                                 sigma_ijph = -1.0d0;
+                         endif;
+                         adfi(iar, jar) = sigma_ijph*max(min(min(abs(adfi(iar, jar)), &
+                                 sigma_ijph*(utd(iar-1, jar) - utd(iar-2, jar))),sigma_ijph*(utd(iar+1, jar) - utd(iar, jar))),0.0);
+                 enddo
+         enddo
+ 
+         do jar=3, maxj+2
+                 do iar=0, maxi+3
+                         sigma_iphj = 1.0d0;
+                         if (utd(iar, jar) - utd(iar, jar-1) < 0.0d0) then
+                                 sigma_iphj = -1.0;
+                         endif;
+                         adfj(iar, jar) = sigma_iphj*max(min(min(abs(adfj(iar, jar)), &
+                                 sigma_iphj*(utd(iar, jar-1) - utd(iar, jar-2))),sigma_iphj*(utd(iar, jar+1) - utd(iar, jar))),0.0);
+                 enddo
+         enddo
+ 
+         ! Step 6 - Limit the antidiffusive fluxes (ADFs)
+         ! Sum anti-diffusive fluxes into and out of each cell to get P+ and P-
+         do jar=1, maxj+2
+                 do iar=1, maxi+2
+                         pplus(iar, jar) = max(0.0d0,adfi(iar, jar)) - min(0.0d0,adfi(iar+1, jar)) &
+                                                         + max(0.0d0,adfj(iar, jar)) - min(0.0d0,adfj(iar, jar+1));
+                         pminus(iar, jar) = max(0.0d0,adfi(iar+1, jar)) - min(0.0d0,adfi(iar, jar)) &
+                                                         + max(0.0d0,adfj(iar, jar+1)) - min(0.0d0,adfj(iar, jar));
+                 enddo           
+         enddo   
+ 
+         ! Get Q+ and Q-
+         ! Get R+ and R-
+         do jar=1, maxj+2 
+                 do iar=1, maxi+2
+                         qplus(iar, jar) = max5s(utd(iar,jar),utd(iar+1,jar),utd(iar-1,jar),utd(iar,jar+1),utd(iar,jar-1))-utd(iar,jar);
+ 
+                         if (pplus(iar, jar) > 0.0d0) then
+                                 rplus(iar, jar) = min(1.0d0,qplus(iar, jar)/pplus(iar, jar));
+                         else
+                                 rplus(iar, jar) = 0.0d0;
+                         endif
+ 
+                         qminus(iar, jar) = utd(iar, jar)-min5s(utd(iar,jar),utd(iar+1,jar),utd(iar-1,jar),utd(iar,jar+1),utd(iar,jar-1));
+ 
+                         if (pminus(iar, jar) > 0.0d0) then
+                                 rminus(iar, jar) = min(1.0d0,qminus(iar, jar)/pminus(iar, jar));
+                         else
+                                 rminus(iar, jar) = 0.0d0;
+                         endif
+ 
+                 enddo
+         enddo
+ 
+         !Step 6 Final
+         !Compute corrections Ci and Cj 
+         !and limit the antidiffusive fluxes ADFi and ADFj
+         do iar=2, maxi+2
+                 do jar=1, maxj+2
+                         if (adfi(iar, jar) >= 0.0d0) then
+                                 adfi(iar, jar) = adfi(iar, jar)* min(rplus(iar, jar),rminus(iar-1, jar));
+                         else
+                                 adfi(iar, jar) = adfi(iar, jar)* min(rplus(iar-1, jar),rminus(iar, jar));
+                         endif
+                 enddo
+         enddo
+ 
+         do jar=2, maxj+2
+                 do iar=1, maxi+2
+                         if (adfj(iar, jar) >= 0.0d0) then
+                                 adfj(iar, jar) = adfj(iar, jar)* min(rplus(iar, jar),rminus(iar, jar-1));
+                         else
+                                 adfj(iar, jar) = adfj(iar, jar)* min(rplus(iar, jar-1),rminus(iar, jar));
+                         endif
+                 enddo
+         enddo
+ 
+         !Step 6
+         !Apply the limited antidiffusive fluxes
+         do iar=2, maxi+1
+                 do jar=3, maxj+1
+                         u(iar, jar) = utd(iar, jar) - (adfi(iar+1, jar) - adfi(iar, jar) + &
+                                   adfj(iar, jar+1) - adfj(iar, jar));
+                 enddo
+         enddo
+                 
+                 
+     else            
+                 
+                 ! end call fctremasteredi
+                 
+                    deltat_d=deltat
+                 un_d=un
+                 psis_d=psis
+                 u_d=u
+                 c_d=c
+                
+                 call extractuvwParallel<<<dimGrid, dimBlock>>>(deltat_d)
+           
+                 u=u_d
+                 v=v_d
+                 w=w_d                 
+                 un=un_d
+                 deltat=deltat_d
+                      
+   endif         
+                 
+                  call recoverconcentration !(c)
+
+!                  do iin = 1, MaxI
+!                       do jin = 1, MaxJ
+!                            write(*,*)c(iin,jin)
+!                        enddo
+!                  enddo
+
+
+                 run_time = run_time + deltat
+  
+                 if ( run_time>auxtime .and. run_time<=auxtime+2.d0*deltat ) then
+                 ! find the closest time step to print at the intervals
+                 auxtime = auxtime + timeinterval
+                 printfunctions = 1
+                 print *, ' 2D-simulation time = ', run_time
+                 else
+                       printfunctions = 0
+                 endif
+                
+                !call AdvanceOneTimestep
+              
+                CounterOfTimesteps=CounterOfTimesteps+1
+                !write(*,*)'CounterOfTimesteps',CounterOfTimesteps
+                call Alg2Run(NoOfIterationsInAlg2SubsequentPass, .false.);
+                
+                
+                
+        enddo
+
+
+ !       close(10)        
+        close(33)
+        close(34)
+
+! Main time loop RunTimeAdvance
+
+	close(35)
+        close(37)
+        
+        close(40)
+        close (41)
+        close(42)
+        close (43)
+        close(44)
+
+
+end program Alg2Fix
+
