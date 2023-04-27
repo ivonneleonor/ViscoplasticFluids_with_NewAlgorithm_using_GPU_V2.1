@@ -1,0 +1,34 @@
+!> Module that defines parameters
+
+module param
+!	Module where the fluids parameters and others are defined
+!	*********************************************************************************
+
+
+	real*8, parameter :: pi = 3.1415926535897d0
+
+
+! parameters to be read from file
+	real*8, parameter  :: StStar=0.1798d0
+	real*8 , parameter :: e = 0.5d0
+	real*8 , parameter :: beta = 0.d0
+	real*8, parameter  :: tau1 = 0.3293d0
+	real*8, parameter  :: tau2 = 0.9824d0
+	real*8, parameter  :: m1 = 1.0d0
+	real*8, parameter  :: m2 = 1.42d0
+	real*8, parameter  :: kappa1 = 0.0112d0
+	real*8, parameter  :: kappa2 = 0.0120d0
+	real*8, parameter  :: rho1 = 1.0d0
+	real*8, parameter  :: rho2 = 0.8d0
+	real*8, parameter  :: Qrof = 1.0d0
+
+	real*8, parameter   :: timeinterval = 1.0d0	
+	real*8, parameter   :: totaltime = 10.0d0
+
+	integer :: printfunctions	! to print 2d simulations to file
+	real*8 :: auxtime		! auxiliary to print to files
+
+   
+
+end module param
+

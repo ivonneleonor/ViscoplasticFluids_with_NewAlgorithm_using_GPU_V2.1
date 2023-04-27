@@ -1,0 +1,16 @@
+0	!Text file with the paramaters for Alg2, all dimensionless
+0.05d0				Stokes number
+0.2d0				e - eccentricity
+0.5d0				beta - angle to the vertical/pi
+0.0d0				tau1 - yield stress of fluid 1
+0.0d0				tau2 - yield stress of fluid 2
+1.d0				m1 - inverse power law number fluid 1
+1.d0 				m2 - inverse power law number fluid 2
+1.0d0				kappa1 - consistency fluid 1
+0.25d0				kappa2 - consistency fluid 2
+1.0d0				rho1 - density fluid 1
+0.9d0				rho2 - density fluid 2
+1.d0				Qrof - flow rate, here always set to 1
+0.5d0				timeinterval
+20.1				totaltime
+

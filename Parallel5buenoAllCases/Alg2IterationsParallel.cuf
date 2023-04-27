@@ -1,0 +1,295 @@
+module AdPparallel
+contains
+
+
+attributes(global) subroutine AdvancePp1(pnd)
+use Alg2Defs
+implicit none
+real*8, dimension( 0:1, 0:MaxI+2, 0:MaxJ+2),device:: pnd
+
+    integer :: x, y, jj
+
+    x = (blockIdx%x-1) * TILE_DIM + threadIdx%x
+    y = (blockIdx%y-1) * TILE_DIM + threadIdx%y
+
+!  do j = 0, TILE_DIM-1, BLOCK_ROWS
+!     odata(x,y+jj) = odata(x,y+jj)
+! odata(x,y) = idata(x,y)   
+!  end do
+
+pnd(0,x,0) = pnd(0,x,1)
+
+end subroutine AdvancePp1
+  
+ 
+ attributes(device) function tauyd(concentration)
+ 
+         use param
+         use alg2defs
+         use alg2iterationsmodule
+ 
+         real*8, dimension(0:MaxI+2,0:MaxJ+2),device::concentration 
+         real*8, dimension(0:MaxI+2,0:MaxJ+2),device::tauy
+ 
+        ! real*8:: concentration, tauY
+ 
+         tauy = (1.0d0-concentration) * tau1 + concentration * tau2
+ 
+ end function tauyd
+ 
+ attributes(global) subroutine AdvancePp2(und, cd, gd, lambdand)
+
+ use Alg2Defs
+ use param
+ use cudafor
+ use Alg2IterationsModule
+ 
+ implicit none
+
+ real*8, dimension( 0:MaxI+1, 0:MaxJ+1),device:: und0
+ real*8, dimension( 0:MaxI+1, 0:MaxJ+1),device:: und
+ real*8, dimension(0:MaxI+2,0:MaxJ+2),device:: cd
+ real*8, dimension(0:1,0:MaxI+2,0:MaxJ+2),device:: gd
+ real*8, dimension( 0:1, 0:MaxI+2, 0:MaxJ+2),device:: lambdand
+ integer, device :: iarr(100)
+ real*8::e_d,x_d
+ integer :: x, y
+
+ x = (blockIdx%x-1) * TILE_DIM + threadIdx%x
+ y = (blockIdx%y-1) * TILE_DIM + threadIdx%y
+
+
+ und0(x, y)= lambdand(0, x, y) + gd(0, x, y) &
+ + ((und(x+1, y+1) - und(x, y+1))/(2.0d0 * deltaX) &
+ + (und(x+1, y) - und(x, y))/(2.0d0 * deltaX)) - &
+ cd(x, y)*dcos(beta)/StStar;
+
+!!rho(cd(x, y))*dcos(beta)/StStar;
+
+!call fill(iarr)
+
+!call hgp_d(x_d,e_d)
+
+end subroutine AdvancePp2
+  
+attributes(device) subroutine fill(a)  
+integer, device :: a(*)
+i = (blockidx%x-1)*blockdim%x + threadidx%x
+a(i) = i
+end subroutine
+
+
+attributes(global) subroutine Kernel(arr)
+integer, device :: arr(*)
+call fill(arr)
+end subroutine Kernel
+  
+attributes(global) subroutine AdvanceLambdad(lambdand,und,pnd)
+
+ use Alg2Defs
+ use param
+ use cudafor
+ use Alg2IterationsModule
+ 
+ implicit none
+
+ real*8, dimension( 0:1, 0:MaxI+2, 0:MaxJ+2),device:: pnd
+ real*8, dimension( 0:MaxI+1, 0:MaxJ+1),device:: und0
+ real*8, dimension( 0:MaxI+1, 0:MaxJ+1),device:: und
+ real*8, dimension(0:MaxI+2,0:MaxJ+2),device:: cd
+ real*8, dimension(0:1,0:MaxI+2,0:MaxJ+2),device:: gd
+ real*8, dimension( 0:1, 0:MaxI+2, 0:MaxJ+2),device:: lambdand
+ 
+ integer :: x, y
+
+ x = (blockIdx%x-1) * TILE_DIM + threadIdx%x
+ y = (blockIdx%y-1) * TILE_DIM + threadIdx%y
+
+lambdand(0, x, y) = lambdand(0, x, y) +  ron * ( - pnd(0, x, y) &
+                   + (und(x+1, y+1) - und(x, y+1))/(2.0d0 * deltax) &
+                   + (und(x+1, y) - und(x, y))/(2.0d0 * deltax));
+lambdand(1, x, y) = lambdand(1, x, y) + ron * (- pnd(1, x, y) &
+                   + (und(x+1, y+1) - und(x+1, y))/(2.0d0 * deltay) &
+                   + (und(x, y+1) - und(x, y))/(2.0d0 * deltay));
+
+
+end subroutine AdvanceLambdad
+  
+attributes(global) subroutine RHS(lambdan_d,fij_d,pn_d)
+
+ use Alg2Defs
+ use param
+ use cudafor
+ use Alg2IterationsModule
+ 
+ implicit none
+
+ real*8, dimension( 0:1, 0:MaxI+2, 0:MaxJ+2),device:: pn_d
+ real*8, dimension( 0:1, 0:MaxI+2, 0:MaxJ+2),device:: lambdan_d
+ real*8, dimension(0:MaxI+2,0:MaxJ+2),device:: fij_d
+ 
+ integer :: x, y
+
+ x = (blockIdx%x-1) * TILE_DIM + threadIdx%x
+ y = (blockIdx%y-1) * TILE_DIM + threadIdx%y
+
+	     fij_d(x, y) =  & 
+				 	0.5d0*deltaY*( (pn_d(0, x-1, y-1) + pn_d(0, x-1, y) - pn_d(0, x, y) &
+				    - pn_d(0, x, y-1)) - (lambdan_d(0, x-1, y-1) + lambdan_d(0, x-1, y) &
+					- lambdan_d(0, x, y) - lambdan_d(0, x, y-1)) ) + 0.5d0*deltaX *   &
+		            ( (pn_d(1, x-1, y-1) + pn_d(1, x, y-1) - pn_d(1, x-1, y) - pn_d(1, x, y)) - &
+ 				 	(lambdan_d(1, x-1, y-1) + lambdan_d(1, x, y-1) - lambdan_d(1, x-1, y)  &
+					- lambdan_d(1, x, y)) );					
+
+end subroutine RHS
+
+attributes(device) function hgp_d(x)
+ use param
+ implicit none
+ real*8:: hgp_d
+ real*8, x
+ 
+ hgp_d =1.0d0 + e * cos(pi * x)
+ 
+ end function hgp_d
+
+attributes(global) subroutine extractuvwParallel(deltat_t)
+
+     use alg2defs
+     use param
+     use cudafor
+     use alg2iterationsmodule
+     use alg2concentrationadvancemodule
+    
+ 
+     implicit none
+  
+     real*8 :: maxv, maxw
+     integer :: x, y
+     real*8:: deltat_t  
+     
+    ! real*8 :: hgp_d
+
+    x = (blockIdx%x-1) * TILE_DIM + threadIdx%x
+    y = (blockIdx%y-1) * TILE_DIM + threadIdx%y
+
+	                   maxv = 0.d0;  maxw = 0.d0;
+	                   
+                    ! Set v
+                !   do jar = 1,maxj
+                           v_d(2,y+1) = 0.d0; v_d(maxi+2,y+1) = 0.0d0
+               !       do iar = 2,maxi
+                              if (imoving == 1) then
+                               ! moving frame
+                                         v_d(x+1, y+1) = - (un_d(x,y+1) - un_d(x,y))/deltay & 
+                                                  /(hgp_d((x-1)*deltax));
+                               else
+                               ! fixed frame
+                                  v_d(x+1,y+1) = - (psis_d(x,y+1) + un_d(x,y+1) - psis_d(x,y)  &
+                                                  - un_d(x,y))/deltay /hgp_d((real(x,8)-1.0d0)*deltax)
+                         endif;
+                                maxv = max(dabs(v_d(x+1,y+1)), maxv)
+                                call syncthreads()
+                               
+                                
+                    !  enddo
+                      !fill in the ghost cells with the reflections
+                      v_d(1, y+1) = - v_d(3, y+1);
+                      v_d(0, y+1) = - v_d(4, y+1);
+                      v_d(maxi+3, y+1) = - v_d(maxi+1, y+1);
+                      v_d(maxi+4, y+1) = - v_d(maxi, y+1);
+                  !enddo
+  
+        !        maxv = max(dabs(v_d(x+1,y+1)), maxv)
+        
+        
+			  !  write(*,*) 'maxv parallel',maxv
+  
+  
+                    !two cells top & bottom
+                  !   do iar = 0, maxi+4
+               
+                         v_d(x, 1) = v_d(x, 2);
+                         v_d(x, 0) = v_d(x, 2);
+                         v_d(x, maxj+3) = v_d(x, maxj+1);
+                         v_d(x, maxj+2) = v_d(x, maxj+1);
+                   !  enddo
+  
+   
+  
+                    ! Set w
+                   !do jar = 1, maxj+1
+                    !    do iar = 1, maxi
+                          if (imoving == 1) then
+                         ! moving frame
+                                  w_d(x+1, y+1) = (un_d(x+1, y) - un_d(x, y)) /deltax/hgp_d((real(x,8)-0.5d0)*deltax);
+                          else
+                          ! fixed frame
+                          w_d(x+1, y+1) = (psis_d(x+1, y) + un_d(x+1, y) - psis_d(x, y) - un_d(x, y)) &
+                                                                                                  /deltax/hgp_d((real(x,8)-0.5d0)*deltax);
+                          endif
+  
+                          maxw = max(dabs(w_d(x+1, y+1)), maxw);
+                          call syncthreads()
+                        !enddo
+                            w_d(1, y+1) = w_d(2, y+1); 
+                            w_d(0, y+1) = w_d(3, y+1); 
+                            w_d(maxi+2, y+1) = w_d(maxi+1, y+1); 
+                            w_d(maxi+3, y+1) = w_d(maxi, y+1); 
+                  !enddo
+  
+      !maxw = max(dabs(w_d(x+1, y+1)), maxw);
+      ! write(*,*) 'maxw parallel',maxw
+  
+  
+          !two cells top & bottom
+              ! do iar = 0, maxi+3
+                  w_d(x, 0) = w_d(x, 2);
+                  w_d(x, 1) = w_d(x, 2);
+                  w_d(x, maxj+4) = w_d(x, maxj+2);
+                  w_d(x, maxj+3) = w_d(x, maxj+2);
+              !enddo
+          ! set timestep
+          !*******
+          deltat_t = cfl / ((maxv/deltax) + (maxw/deltay));
+  
+!		write(*,*) deltat_t
+		!write(*,*)'maxv',maxv
+		!write(*,*)'maxw',maxw
+		
+  
+       !  do iar = 1, maxi
+         !         do jar = 1, maxj
+                          u_d(x+1, y+1) = c_d(x, y) * hgp_d((real(x,8)-0.5d0)*deltax);
+                          cshift_d(x+1, y+1) = c_d(x, y);
+          !        enddo
+         ! enddo
+          !fill in the ghost cells with the reflections
+          !two cells to each side
+          !do jar = 2, maxj+1;
+                  u_d(1, y) = u_d(2, y);
+                  cshift_d(1, y) = cshift_d(2, y);
+                  u_d(0, y) = u_d(3, y);
+                  cshift_d(0, y) = cshift_d(3, y);
+                  u_d(maxi+2, y) = u_d(maxi+1, y);
+                  cshift_d(maxi+2, y) = cshift_d(maxi+1, y);
+                  u_d(maxi+3, y) = u_d(maxi, y);
+                  cshift_d(maxi+3, y) = cshift_d(maxi, y);
+          !enddo
+          !two cells top & bottom
+          !do iar = 0, maxi+3
+                  u_d(x, 1) = u_d(x, 2);
+                  cshift_d(x, 1) = cshift_d(x, 2);
+                  u_d(x, 0) = u_d(x, 2);
+                  cshift_d(x, 0) = cshift_d(x, 2);
+                  u_d(x, maxj+2) = u_d(x, maxj+1);
+                  cshift_d(x, maxj+2) = cshift_d(x, maxj+1);
+                  u_d(x, maxj+3) = u_d(x, maxj+1);
+                  cshift_d(x, maxj+3) = cshift_d(x, maxj+1);
+          !enddo
+  			
+
+end subroutine extractuvwParallel
+
+  
+end module AdPparallel
